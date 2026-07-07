@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "SocketScope",
+  "version": "1.0.0",
+  "description": "Remote control any webpage via WebSocket",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-script.js"],
+      "css": ["content-style.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/index.html",
+    "default_title": "SocketScope",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "toggle-bar": {
+      "suggested_key": {
+        "default": "Alt+S"
+      },
+      "description": "Toggle the SocketScope control bar"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["content-style.css"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

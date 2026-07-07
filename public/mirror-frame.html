@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    html, body { margin: 0; padding: 0; min-height: 100vh; }
+  </style>
+  <style id="mirror-styles"></style>
+</head>
+<body>
+  <script>
+    // DOM Mirror Client - Receives mutations and rebuilds DOM
+    // Runs inside a sandboxed iframe
+
+    const idToNode = new Map();
+
+    function createNode(data) {
+      if (!data) return null;
+
+      if (data.nodeType === 1) { // Element
+        const tagName = data.tagName || 'div';
+        // Sanitize: only allow safe tag names
+        const safeTags = new Set([
+          'div','span','p','h1','h2','h3','h4','h5','h6',
+          'a','button','input','textarea','select','option',
+          'form','label','img','svg','path','circle','rect',
+          'table','tr','td','th','thead','tbody','ul','ol','li',
+          'nav','header','footer','section','article','aside','main',
+          'strong','em','b','i','u','s','code','pre','blockquote',
+          'br','hr','small','sub','sup','mark','time','progress',
+          'video','audio','source','track','canvas','iframe',
+          'fieldset','legend','datalist','optgroup',
+          'dl','dt','dd','figure','figcaption','picture',
+          'html','head','body','meta','title','style','link','script'
+        ]);
+
+        if (!safeTags.has(tagName)) {
+          console.warn('Blocked tag:', tagName);
+          return document.createElement('div');
+        }
+
+        const el = document.createElement(tagName);
+        if (data.attrs) {
+          for (const [name, value] of Object.entries(data.attrs)) {
+            // Block event handlers and dangerous attributes
+            if (name.startsWith('on')) continue;
+            if (name === 'srcdoc') continue;
+            if (name === 'javascript') continue;
+            try {
+              el.setAttribute(name, String(value));
+            } catch (e) {
+              // ignore invalid attributes
+            }
+          }
+        }
+        if (data.children) {
+          for (const childData of data.children) {
+            const child = createNode(childData);
+            if (child) {
+              el.appendChild(child);
+              if (childData.id) idToNode.set(childData.id, child);
+            }
+          }
+        }
+        if (data.id) idToNode.set(data.id, el);
+        return el;
+
+      } else if (data.nodeType === 3) { // Text
+        const text = document.createTextNode(data.textContent || '');
+        if (data.id) idToNode.set(data.id, text);
+        return text;
+
+      } else if (data.nodeType === 8) { // Comment
+        const comment = document.createComment(data.textContent || '');
+        if (data.id) idToNode.set(data.id, comment);
+        return comment;
+      }
+
+      return null;
+    }
+
+    function applyMutations(mutations) {
+      for (const m of mutations) {
+        try {
+          if (m.type === 'childList') {
+            const target = idToNode.get(m.targetId);
+            if (!target) {
+              console.warn('Target not found for mutation:', m.targetId);
+              continue;
+            }
+
+            // Remove nodes
+            if (m.removedNodes) {
+              for (const removedId of m.removedNodes) {
+                const removed = idToNode.get(removedId);
+                if (removed && removed.parentNode) {
+                  removed.parentNode.removeChild(removed);
+                }
+                idToNode.delete(removedId);
+              }
+            }
+
+            // Add nodes
+            if (m.addedNodes) {
+              for (const addedData of m.addedNodes) {
+                const added = createNode(addedData);
+                if (added) {
+                  if (m.nextSiblingId) {
+                    const nextSibling = idToNode.get(m.nextSiblingId);
+                    if (nextSibling && nextSibling.parentNode === target) {
+                      target.insertBefore(added, nextSibling);
+                      continue;
+                    }
+                  }
+                  if (m.previousSiblingId) {
+                    const prevSibling = idToNode.get(m.previousSiblingId);
+                    if (prevSibling && prevSibling.parentNode === target) {
+                      target.insertBefore(added, prevSibling.nextSibling);
+                      continue;
+                    }
+                  }
+                  target.appendChild(added);
+                }
+              }
+            }
+
+          } else if (m.type === 'attributes') {
+            const target = idToNode.get(m.targetId);
+            if (target && target.nodeType === 1) {
+              if (m.newValue === null || m.newValue === undefined) {
+                (target).removeAttribute(m.attributeName);
+              } else {
+                (target).setAttribute(m.attributeName, m.newValue);
+              }
+            }
+
+          } else if (m.type === 'characterData') {
+            const target = idToNode.get(m.targetId);
+            if (target && target.nodeType === 3) {
+              target.textContent = m.newValue || '';
+            }
+          }
+        } catch (e) {
+          console.error('Mutation apply error:', e, m);
+        }
+      }
+    }
+
+    // Listen for messages from parent window
+    window.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (!msg || !msg.type) return;
+
+      switch (msg.type) {
+        case 'snapshot': {
+          // Clear existing
+          idToNode.clear();
+          document.documentElement.innerHTML = '<head><meta charset="UTF-8"><style id="mirror-styles"></style></head><body></body>';
+
+          // Apply styles
+          if (msg.styles && msg.styles.length > 0) {
+            const styleEl = document.getElementById('mirror-styles');
+            if (styleEl) {
+              styleEl.textContent = msg.styles.join('\n');
+            }
+          }
+
+          // Rebuild DOM
+          if (msg.root) {
+            const root = createNode(msg.root);
+            if (root && root.nodeType === 1) {
+              const newHtml = root;
+              // Copy attributes to existing html element
+              if (newHtml.attributes) {
+                for (let i = 0; i < newHtml.attributes.length; i++) {
+                  const attr = newHtml.attributes[i];
+                  document.documentElement.setAttribute(attr.name, attr.value);
+                }
+              }
+              // Replace head and body
+              const newHead = newHtml.querySelector('head');
+              const newBody = newHtml.querySelector('body');
+              if (newHead) {
+                const existingHead = document.querySelector('head');
+                if (existingHead) {
+                  existingHead.innerHTML = newHead.innerHTML + '<style id="mirror-styles"></style>';
+                  if (msg.styles && msg.styles.length > 0) {
+                    const styleEl = document.getElementById('mirror-styles');
+                    if (styleEl) styleEl.textContent = msg.styles.join('\n');
+                  }
+                }
+              }
+              if (newBody) {
+                const existingBody = document.querySelector('body');
+                if (existingBody) {
+                  existingBody.innerHTML = newBody.innerHTML;
+                  // Tag all body children
+                  const tagNodes = (node, id) => {
+                    idToNode.set(id, node);
+                    let childId = id + 1;
+                    for (const child of node.childNodes) {
+                      childId = tagNodes(child, childId);
+                    }
+                    return childId;
+                  };
+                  let nextId = (msg.root.id || 0) + 1000;
+                  for (const child of existingBody.childNodes) {
+                    nextId = tagNodes(child, nextId);
+                  }
+                }
+              }
+            }
+          }
+
+          // Report back
+          window.parent.postMessage({ type: 'snapshot_applied' }, '*');
+          break;
+        }
+
+        case 'mutations': {
+          if (msg.mutations) {
+            applyMutations(msg.mutations);
+          }
+          break;
+        }
+
+        case 'scroll': {
+          window.scrollTo(msg.x || 0, msg.y || 0);
+          break;
+        }
+
+        case 'apply_styles': {
+          if (msg.styles) {
+            const styleEl = document.getElementById('mirror-styles');
+            if (styleEl) {
+              styleEl.textContent = msg.styles.join('\n');
+            }
+          }
+          break;
+        }
+      }
+    });
+
+    // Forward mouse/keyboard events to parent
+    let lastMouseX = 0, lastMouseY = 0;
+    document.addEventListener('click', (e) => {
+      window.parent.postMessage({
+        type: 'mirror_click',
+        x: e.clientX,
+        y: e.clientY,
+      }, '*');
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      // Throttle to 10fps
+      const now = Date.now();
+      if (now - lastMouseMove < 100) return;
+      lastMouseMove = now;
+      window.parent.postMessage({
+        type: 'mirror_mousemove',
+        x: e.clientX,
+        y: e.clientY,
+      }, '*');
+    });
+
+    let lastMouseMove = 0;
+
+    document.addEventListener('keydown', (e) => {
+      window.parent.postMessage({
+        type: 'mirror_keydown',
+        key: e.key,
+        code: e.code,
+      }, '*');
+    });
+
+    document.addEventListener('scroll', () => {
+      window.parent.postMessage({
+        type: 'mirror_scroll',
+        x: window.scrollX,
+        y: window.scrollY,
+      }, '*');
+    });
+
+    // Ready signal
+    window.parent.postMessage({ type: 'mirror_ready' }, '*');
+  </script>
+</body>
+</html>

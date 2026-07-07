@@ -1,7 +1,17 @@
 // SocketScope Background Service Worker
+// Manages WebSocket connections, session state, keyboard shortcuts, and screen capture
 
+// Keep track of which tabs have the bar visible
 const tabStates = new Map<number, boolean>();
 
+// Screen capture state
+let captureInterval: ReturnType<typeof setInterval> | null = null;
+let captureWs: WebSocket | null = null;
+let captureTabId: number | null = null;
+const CAPTURE_FPS = 5; // frames per second
+const CAPTURE_QUALITY = 80; // JPEG quality 0-100
+
+// Listen for keyboard shortcut
 chrome.commands.onCommand.addListener((command) => {
   if (command === "toggle-bar") {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -13,6 +23,7 @@ chrome.commands.onCommand.addListener((command) => {
   }
 });
 
+// Listen for extension icon click
 chrome.action.onClicked.addListener((tab) => {
   if (tab.id) {
     toggleBar(tab.id);
@@ -39,6 +50,52 @@ function toggleBar(tabId: number) {
   });
 }
 
+// Screen capture: take screenshot of current tab and send via WebSocket
+async function captureFrame() {
+  if (!captureWs || captureWs.readyState !== WebSocket.OPEN) return;
+
+  try {
+    const tabId = captureTabId;
+    if (!tabId) return;
+
+    const dataUrl = await chrome.tabs.captureVisibleTab(
+      chrome.windows.WINDOW_ID_CURRENT,
+      {
+        format: "jpeg",
+        quality: CAPTURE_QUALITY,
+      }
+    );
+
+    // Send frame via WebSocket (base64 JPEG)
+    captureWs.send(
+      JSON.stringify({
+        type: "capture_frame",
+        payload: { image: dataUrl, timestamp: Date.now() },
+      })
+    );
+  } catch (err) {
+    console.error("Capture failed:", (err as Error).message);
+  }
+}
+
+function startCapture(ws: WebSocket, tabId: number) {
+  stopCapture();
+  captureWs = ws;
+  captureTabId = tabId;
+  captureFrame(); // first frame immediately
+  captureInterval = setInterval(captureFrame, 1000 / CAPTURE_FPS);
+}
+
+function stopCapture() {
+  if (captureInterval) {
+    clearInterval(captureInterval);
+    captureInterval = null;
+  }
+  captureWs = null;
+  captureTabId = null;
+}
+
+// Handle messages from popup/content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "getConfig") {
     chrome.storage.local.get(
@@ -112,9 +169,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Screen capture control from content script
+  if (message.type === "startCapture") {
+    const wsUrl = message.wsUrl as string;
+    const tabId = sender.tab?.id;
+    const sessionId = message.sessionId as string;
+    if (wsUrl && tabId && sessionId) {
+      const ws = new WebSocket(`${wsUrl}?sessionId=${sessionId}&role=controller`);
+      ws.onopen = () => {
+        startCapture(ws, tabId);
+        sendResponse({ ok: true });
+      };
+      ws.onerror = () => sendResponse({ ok: false, error: "WS connect failed" });
+      return true;
+    }
+    sendResponse({ ok: false, error: "Missing params" });
+    return true;
+  }
+
+  if (message.type === "stopCapture") {
+    stopCapture();
+    sendResponse({ ok: true });
+    return true;
+  }
+
   return false;
 });
 
+// Install handler
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(["relayUrl", "commandWhitelist", "autoConnect"], (result) => {
     if (!result.relayUrl) {

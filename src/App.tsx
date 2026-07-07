@@ -3,6 +3,7 @@ import Home from "./pages/Home"
 import Dashboard from "./pages/Dashboard"
 import Settings from "./pages/Settings"
 import Remote from "./pages/Remote"
+import Mirror from "./pages/Mirror"
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/dashboard/settings" element={<Settings />} />
       <Route path="/remote" element={<Remote />} />
+      <Route path="/mirror" element={<Mirror />} />
     </Routes>
   )
 }
